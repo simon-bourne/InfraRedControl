@@ -126,32 +126,46 @@ iguanaService, lircService :: String
 iguanaService = "iguanaIR"
 lircService = "lirc"
 
+filesAllExist :: [String] -> IO Bool
+filesAllExist files = andM (doesFileExist <$> files)
+
+isIguanaDevice :: String -> String -> Bool
+isIguanaDevice vendorId productId =
+    vendorId == iguanaVendorId && productId == iguanaProductId
+
+resetUSBDevice :: String -> IO ()
+resetUSBDevice devicePath = do
+    let authorizedPath = devicePath ++ "/authorized"
+
+    putStrLn "Resetting IR transceiver"
+    writeFile authorizedPath "0\n"
+    threadDelay $ seconds 1
+    writeFile authorizedPath "1\n"
+    threadDelay $ seconds 1
+
+resetIguanaDevice :: String -> IO ()
+resetIguanaDevice device = do
+    let devicePath = deviceDir ++ "/" ++ device
+    let vendorIdFile = devicePath ++ "/idVendor"
+    let productIdFile = devicePath ++ "/idProduct"
+
+    whenM (filesAllExist [vendorIdFile, productIdFile]) $ do
+        vendorId <- readFile vendorIdFile
+        productId <- readFile productIdFile
+
+        when (isIguanaDevice vendorId productId) $ resetUSBDevice devicePath
+
+deviceDir :: String
+deviceDir = "/sys/bus/usb/devices"
+
 main :: IO ()
 main = do
     stopService iguanaService
     stopService lircService
 
-    let deviceDir = "/sys/bus/usb/devices"
-
     usbDevices <- (\\ [".", ".."]) <$> getDirectoryContents deviceDir
 
-    forM usbDevices $ \device -> do
-        let devicePath = deviceDir ++ "/" ++ device
-        let vendorIdFile = devicePath ++ "/idVendor"
-        let productIdFile = devicePath ++ "/idProduct"
-
-        whenM (andM (doesFileExist <$> [vendorIdFile, productIdFile])) $ do
-            vendorId <- readFile vendorIdFile
-            productId <- readFile productIdFile
-
-            when (vendorId == iguanaVendorId && productId == iguanaProductId) $ do
-                let authorizedPath = devicePath ++ "/authorized"
-
-                putStrLn "Resetting IR transceiver"
-                writeFile authorizedPath "0\n"
-                threadDelay $ seconds 1
-                writeFile authorizedPath "1\n"
-                threadDelay $ seconds 1
+    mapM resetIguanaDevice usbDevices
 
     startService iguanaService
     untilSuccessful "igclient" ["--get-version"]
