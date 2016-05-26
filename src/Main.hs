@@ -1,4 +1,4 @@
-module Main where
+module Main (main) where
 
 import System.IO
 import System.Linux.Input.Event
@@ -33,11 +33,12 @@ data IrSendAction = Send_Once | Send_Start | Send_Stop deriving Show
 
 irsend :: IrSendAction -> ActionKey -> IO ()
 irsend action key = do
-    (_exitCode , stdout, stderr) <-
+    (_exitCode , output, errorOutput) <-
         readProcessWithExitCode "irsend" [show action, "sony-kdl40w2000", "KEY_" ++ show key] ""
-
-    when (stdout /= "") $ putStrLn stdout
-    when (stderr /= "") $ putStrLn stderr
+    logOutput output
+    logOutput errorOutput
+      where
+        logOutput o = when (o /= "") $ putStrLn o
 
 sendAction :: ActionChan -> Maybe ActionKey -> IO ()
 sendAction _ Nothing = return ()
@@ -110,7 +111,7 @@ translateDepressedKey events f key
 translateEvent :: ActionChan -> Handle -> Event -> IO ()
 translateEvent events f (KeyEvent _ key Depressed) = translateDepressedKey events f key
 translateEvent events _ (KeyEvent _ key Repeated) = sendAction events $ translateKey key
-translateEvent events _ (KeyEvent _ key Released) = writeChan events Stop
+translateEvent events _ (KeyEvent _ _ Released) = writeChan events Stop
 translateEvent _ _ _ = return ()
 
 readEvent :: Handle -> IO Event
@@ -124,7 +125,7 @@ exitedSuccessfully ExitSuccess = True
 exitedSuccessfully _ = False
 
 seconds :: Int -> Int
-seconds n = n * (10 ^ 6)
+seconds n = n * ((10 :: Int) ^ (6 :: Int))
 
 untilSuccessful :: String -> [String] -> IO ()
 untilSuccessful command args = void $ iterateUntil exitedSuccessfully $ do
@@ -198,7 +199,7 @@ main = do
 
     usbDevices <- (\\ [".", ".."]) <$> getDirectoryContents deviceDir
 
-    mapM resetIguanaDevice usbDevices
+    mapM_ resetIguanaDevice usbDevices
 
     startService iguanaService
     untilSuccessful "igclient" ["--get-version"]
