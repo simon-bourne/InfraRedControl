@@ -125,7 +125,7 @@ exitedSuccessfully ExitSuccess = True
 exitedSuccessfully _ = False
 
 seconds :: Int -> Int
-seconds n = n * ((10 :: Int) ^ (6 :: Int))
+seconds n = n * (10 ^ (6 :: Int))
 
 untilSuccessful :: String -> [String] -> IO ()
 untilSuccessful command args = void $ iterateUntil exitedSuccessfully $ do
