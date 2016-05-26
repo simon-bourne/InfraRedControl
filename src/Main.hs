@@ -29,7 +29,7 @@ released :: Key -> Event -> Bool
 released requestedKey (KeyEvent _ key Released) = key == requestedKey
 released _ _ = False
 
-data IrSendAction = Send_Start | Send_Stop deriving Show
+data IrSendAction = Send_Once | Send_Start | Send_Stop deriving Show
 
 irsend :: IrSendAction -> ActionKey -> IO ()
 irsend action key = do
@@ -45,13 +45,21 @@ sendAction events (Just action) = do
     now <- getCurrentTime
     writeChan events $ Start action now
 
+irstart :: ActionKey -> IO (Maybe ActionKey)
+irstart key
+    | key `elem` [VOLUMEUP, VOLUMEDOWN] = do
+        irsend Send_Start key
+        return $ Just key
+    | otherwise = do
+        irsend Send_Once key
+        return Nothing
+
 startAction :: ActionKey -> UTCTime -> IO (Maybe ActionKey)
 startAction key t = do
     now <- getCurrentTime
 
-    if (diffUTCTime now t < 1) then do
-        irsend Send_Start key
-        return $ Just key
+    if (diffUTCTime now t < 1) then
+        irstart key
     else do
         putStrLn "Discarding event older than 1 second"
         return Nothing
