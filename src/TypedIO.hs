@@ -8,17 +8,14 @@ module TypedIO (
     CurrentTime(..),
     FileReader(..),
     FileWriter(..),
-    DirectoryReader(..),
-    EvdevReader(..)
+    DirectoryReader(..)
 ) where
 
 import qualified Control.Concurrent as Concurrent
 import Control.Concurrent (Chan, ThreadId)
-import Control.Monad.Loops
 import qualified Data.Time.Clock as Clock
 import Data.Time.Clock (UTCTime)
 import qualified System.Directory as Directory
-import System.Linux.Input.Event
 import qualified System.Process as Process
 import System.Exit
 import System.IO (Handle, IOMode(..), withFile)
@@ -96,9 +93,3 @@ class Monad m => DirectoryReader m where
 instance DirectoryReader IO where
     doesFileExist = Directory.doesFileExist
     getDirectoryContents = Directory.getDirectoryContents
-
-class Monad m => EvdevReader m where
-    readEvent :: Handle -> m Event
-
-instance EvdevReader IO where
-    readEvent f = untilJust $ hReadEvent f
