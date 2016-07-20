@@ -1,17 +1,19 @@
-{-# LANGUAGE PatternSynonyms, DefaultSignatures, DeriveAnyClass #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DeriveAnyClass    #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 module Main (main) where
 
+import           Control.Concurrent       (Chan)
+import           Control.Monad
+import           Control.Monad.IfElse
+import           Control.Monad.Loops
+import           Data.List
+import           System.Exit
+import           System.IO                (Handle)
+import           System.Linux.Input.Event
+import           Data.Time.Clock (UTCTime, diffUTCTime)
 import TypedIO
-import Control.Monad
-import Control.Monad.Loops
-import Control.Monad.IfElse
-import System.Exit
-import System.Linux.Input.Event
-import System.IO (Handle)
-import Control.Concurrent (Chan)
-import Data.Time.Clock (UTCTime, diffUTCTime)
-import Data.List
 
 class Show a => NamedKey a where
     keyName :: a -> String
@@ -21,6 +23,8 @@ data ActionKey = SingleKey SingleKey | RepeatingKey RepeatingKey
 data SingleKey = POWER | VIDEO4 | VIDEO5 deriving (NamedKey, Show)
 data RepeatingKey = VOLUMEUP | VOLUMEDOWN deriving (NamedKey, Show, Eq)
 
+data CurrentChannel = PC | AppleTV
+
 data Action = Start ActionKey UTCTime | Stop
 
 newtype ActionChan = ActionChan (Chan Action)
@@ -29,8 +33,7 @@ pattern KeyPower = Key 38
 pattern KeyVolDown = Key 114
 pattern KeyVolUp = Key 115
 pattern KeySuper = Key 125
-pattern KeyPC = Key 35
-pattern KeyAppleTV = Key 37
+pattern KeySwitchChannel = Key 35
 
 data IrSendAction = Send_Once | Send_Start | Send_Stop deriving Show
 
@@ -89,7 +92,7 @@ startAction :: (CurrentTime m, IrSender m, StdoutWriter m) => ActionKey -> UTCTi
 startAction key t = do
     now <- getCurrentTime
 
-    if (diffUTCTime now t < 1) then
+    if diffUTCTime now t < 1 then
         irstart key
     else do
         writeStdoutLn "Discarding event older than 1 second"
@@ -107,46 +110,59 @@ runAction (Just currentKey) (Start key t) = do
 runAction Nothing (Start key t) = startAction key t
 runAction Nothing Stop = return Nothing
 
-handleSuperModifiedKey :: Key -> Maybe ActionKey
-handleSuperModifiedKey KeyPower = Just $ SingleKey POWER
-handleSuperModifiedKey KeyPC = Just $ SingleKey VIDEO4
-handleSuperModifiedKey KeyAppleTV = Just $ SingleKey VIDEO5
-handleSuperModifiedKey _ = Nothing
+handleSuperModifiedKey :: CurrentChannel -> Key -> (CurrentChannel, Maybe ActionKey)
+handleSuperModifiedKey currentChannel KeyPower = (currentChannel, Just $ SingleKey POWER)
+handleSuperModifiedKey PC KeySwitchChannel = (AppleTV, Just $ SingleKey VIDEO5)
+handleSuperModifiedKey AppleTV KeySwitchChannel = (PC, Just $ SingleKey VIDEO4)
+handleSuperModifiedKey currentChannel _ = (currentChannel, Nothing)
 
 data SuperKeyState = SuperHeld | SuperReleased deriving Eq
 
-handleSuper :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> m SuperKeyState
-handleSuper events f = do
+handleSuper :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> CurrentChannel -> m (CurrentChannel, SuperKeyState)
+handleSuper events f currentChannel = do
     e <- readEvent f
-    sendAction events $ case e of
-        KeyEvent _ key Depressed -> handleSuperModifiedKey key
-        KeyEvent _ key Repeated -> handleSuperModifiedKey key
-        _ -> Nothing
+    let (newChannel, actionKey) = case e of
+          KeyEvent _ key Depressed -> handleSuperModifiedKey currentChannel key
+          KeyEvent _ key Repeated -> handleSuperModifiedKey currentChannel key
+          _ -> (currentChannel, Nothing)
 
-    return $ case e of
-        KeyEvent _ KeySuper Released -> SuperReleased
-        _ -> SuperHeld
+    sendAction events actionKey
 
-superPressed :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> m ()
-superPressed events f = void $ iterateUntil (== SuperReleased) $ handleSuper events f
+    let superKeyState = case e of
+          KeyEvent _ KeySuper Released -> SuperReleased
+          _ -> SuperHeld
+
+    return (newChannel, superKeyState)
+
+superPressed :: (EvdevReader m, ActionSender m) => CurrentChannel -> ActionChan -> EvdevHandle -> m CurrentChannel
+superPressed currentChannel events f = fst <$> iterateUntilM ((== SuperReleased) . snd) (handleSuper events f . fst) (currentChannel, SuperHeld)
 
 translateKey :: Key -> Maybe ActionKey
 translateKey KeyVolDown = Just $ RepeatingKey VOLUMEDOWN
 translateKey KeyVolUp = Just $ RepeatingKey VOLUMEUP
 translateKey _ = Nothing
 
-translateDepressedKey :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> Key -> m ()
-translateDepressedKey events f KeySuper = superPressed events f
-translateDepressedKey events _ key = sendAction events $ translateKey key
+translateDepressedKey :: (EvdevReader m, ActionSender m) => CurrentChannel -> ActionChan -> EvdevHandle -> Key -> m CurrentChannel
+translateDepressedKey currentChannel events f KeySuper = superPressed currentChannel events f
+translateDepressedKey currentChannel events _ key = do
+  sendAction events $ translateKey key
+  return currentChannel
 
-translateEvent :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> Event -> m ()
-translateEvent events f (KeyEvent _ key Depressed) = translateDepressedKey events f key
-translateEvent events _ (KeyEvent _ key Repeated) = sendAction events $ translateKey key
-translateEvent events _ (KeyEvent _ _ Released) = sendStop events
-translateEvent _ _ _ = return ()
+translateEvent :: (EvdevReader m, ActionSender m) => CurrentChannel -> ActionChan -> EvdevHandle -> Event -> m CurrentChannel
+translateEvent currentChannel events f (KeyEvent _ key Depressed) = translateDepressedKey currentChannel events f key
+translateEvent currentChannel events _ (KeyEvent _ key Repeated) = do
+  sendAction events $ translateKey key
+  return currentChannel
+translateEvent currentChannel events _ (KeyEvent _ _ Released) = do
+  sendStop events
+  return currentChannel
+translateEvent currentChannel _ _ _ = return currentChannel
+
+readSingleEvent :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> CurrentChannel -> m CurrentChannel
+readSingleEvent events f currentChannel = readEvent f >>= translateEvent currentChannel events f
 
 readEvents :: (EvdevReader m, ActionSender m) => ActionChan -> EvdevHandle -> m ()
-readEvents events f = forever (readEvent f >>= translateEvent events f)
+readEvents events f = iterateM_ (readSingleEvent events f) PC
 
 seconds :: Int -> Int
 seconds n = n * (10 ^ (6 :: Int))
