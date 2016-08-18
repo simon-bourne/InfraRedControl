@@ -20,7 +20,7 @@ class Show a => NamedKey a where
     keyName = show
 
 data ActionKey = SingleKey SingleKey | RepeatingKey RepeatingKey
-data SingleKey = POWER | VIDEO4 | VIDEO5 deriving (NamedKey, Show)
+data SingleKey = POWERON | POWER | VIDEO4 | VIDEO5 deriving (NamedKey, Show)
 data RepeatingKey = VOLUMEUP | VOLUMEDOWN deriving (NamedKey, Show, Eq)
 
 data CurrentChannel = PC | AppleTV
@@ -277,4 +277,5 @@ main = do
     stopServices
     resetIguanaDevices
     startServices
+    void $ irstart $ SingleKey POWERON
     runThreads
